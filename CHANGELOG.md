@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.30.8] - 2026-10-01
+
+### Change 27
+
+- Rebuilt the extension and prepared a fresh Marketplace deployment of the current codebase.
+
 ## [1.30.7] - 2026-09-17
 
 ### Change 26

@@ -221,6 +221,30 @@ export class LMStudioClient {
     return ['localhost', '127.0.0.1', '0.0.0.0', '::1'].includes(url.hostname);
   }
 
+  private getLoadedContextLength(model: LMStudioRawModel): number | undefined {
+    if (!Array.isArray(model.loaded_instances)) {
+      return undefined;
+    }
+
+    const contextLengths = model.loaded_instances
+      .map((instance) => {
+        if (typeof instance.context_length === 'number') {
+          return instance.context_length;
+        }
+
+        return instance.config?.context_length;
+      })
+      .filter((contextLength): contextLength is number => typeof contextLength === 'number'
+        && Number.isFinite(contextLength)
+        && contextLength > 0);
+
+    if (contextLengths.length === 0) {
+      return undefined;
+    }
+
+    return Math.min(...contextLengths);
+  }
+
   private mapLocalModel(model: LMStudioLocalModel, loaded: boolean): LMStudioModel {
     const maxContextLength =
       typeof model.maxContextLength === 'number'
@@ -315,12 +339,15 @@ export class LMStudioClient {
       let models: LMStudioModel[];
       if (raw?.models && Array.isArray(raw.models)) {
         const rawModels = (raw.models as LMStudioRawModel[]).filter(m => m.type !== 'embedding');
-        models = rawModels.map(m => ({
-          id: m.key, object: 'model', owned_by: m.publisher || 'unknown',
-          type: m.type, publisher: m.publisher, display_name: m.display_name,
-          architecture: m.architecture, max_context_length: m.max_context_length,
-          capabilities: m.capabilities,
-        }));
+        models = rawModels.map((m) => {
+          const loadedContextLength = this.getLoadedContextLength(m);
+          return {
+            id: m.key, object: 'model', owned_by: m.publisher || 'unknown',
+            type: m.type, publisher: m.publisher, display_name: m.display_name,
+            architecture: m.architecture, max_context_length: loadedContextLength ?? m.max_context_length,
+            capabilities: m.capabilities,
+          };
+        });
         this.log(`Filtered ${raw.models.length} -> ${models.length} LLM models`);
       } else if (Array.isArray(raw)) {
         models = raw;

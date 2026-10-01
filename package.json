@@ -617,6 +617,7 @@
     "package": "npm run check-types && node esbuild.js --production",
     "package:vsix": "vsce package",
     "publish:vsce": "vsce publish",
+    "publish:ovsx": "npx --yes ovsx publish",
     "lint": "eslint src",
     "test": "node ./out/test/runTest.js"
   },

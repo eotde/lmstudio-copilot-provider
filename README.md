@@ -4,9 +4,10 @@ Run local LM Studio models inside VS Code Copilot Chat with streaming responses,
 
 If LM Studio is installed on your machine, the extension is designed to work out of the box. It also supports connecting to remote LM Studio servers.
 
-Install from the VS Code Marketplace:
+Install from the VS Code Marketplace or Open VSX:
 
 [DanLambiase.lmstudio-copilot-provider](https://marketplace.visualstudio.com/items?itemName=DanLambiase.lmstudio-copilot-provider)
+[DanLambiase.lmstudio-copilot-provider](https://open-vsx.org/extension/DanLambiase/lmstudio-copilot-provider)
 
 ## What it does
 
@@ -234,6 +235,9 @@ npm run package:vsix
 
 # Publish to VS Code Marketplace (requires VSCE_PAT)
 npm run publish:vsce
+
+# Publish to Open VSX (requires OVSX_PAT)
+npm run publish:ovsx
 ```
 
 ### Release workflow
@@ -243,9 +247,10 @@ Typical release flow used by this project:
 1. Rebuild: `npm run compile`
 2. Production bundle: `npm run package`
 3. VSIX artifact: `npm run package:vsix`
-4. Publish: `npm run publish:vsce`
+4. Publish to VS Code Marketplace: `npm run publish:vsce`
+5. Publish to Open VSX: `npm run publish:ovsx`
 
-If publishing from CI or a non-interactive shell, export `VSCE_PAT` before step 4.
+If publishing from CI or a non-interactive shell, export `VSCE_PAT` before step 4 and `OVSX_PAT` before step 5.
 
 ## License
 

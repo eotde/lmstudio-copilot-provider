@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as cp from 'child_process';
 import { Logger } from '../logger';
 
 export const TERMINAL_TOOL_NAME = 'lmstudio_run_in_terminal';
@@ -27,6 +28,22 @@ function truncate(text: string, maxChars: number): string {
 
 function makeResult(text: string): vscode.LanguageModelToolResult {
   return new vscode.LanguageModelToolResult([new vscode.LanguageModelTextPart(text)]);
+}
+
+function formatExecutionResult(
+  output: string,
+  exitCode: number | undefined,
+  budgetChars: number,
+): string {
+  const parts: string[] = [`exit_code: ${exitCode ?? 'unknown'}`];
+
+  if (output.trim()) {
+    parts.push(`output:\n${truncate(output.trimEnd(), Math.floor(budgetChars * 0.9))}`);
+  } else {
+    parts.push('(no output)');
+  }
+
+  return parts.join('\n\n');
 }
 
 async function waitForShellIntegration(
@@ -213,6 +230,70 @@ async function executeInTerminal(
   }
 }
 
+async function executeWithShellFallback(
+  command: string,
+  cwd: string,
+  timeoutMs: number,
+  token: vscode.CancellationToken,
+): Promise<{ output: string; exitCode: number | undefined }> {
+  if (token.isCancellationRequested) {
+    throw new Error('Command cancelled.');
+  }
+
+  return new Promise((resolve, reject) => {
+    let finished = false;
+
+    const finishResolve = (result: { output: string; exitCode: number | undefined }) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cancelDisposable.dispose();
+      resolve(result);
+    };
+
+    const finishReject = (error: Error) => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      cancelDisposable.dispose();
+      reject(error);
+    };
+
+    const child = cp.exec(
+      command,
+      { cwd, timeout: timeoutMs, maxBuffer: 1024 * 1024 * 10 },
+      (error, stdout, stderr) => {
+        if (finished) {
+          return;
+        }
+
+        if (token.isCancellationRequested) {
+          finishReject(new Error('Command cancelled.'));
+          return;
+        }
+
+        const execError = error as cp.ExecException | null;
+
+        if (execError?.killed && execError.signal === 'SIGTERM') {
+          finishReject(new Error(`Command timed out after ${timeoutMs} ms.`));
+          return;
+        }
+
+        const exitCode = typeof execError?.code === 'number' ? execError.code : execError ? 1 : 0;
+        const output = `${stdout ?? ''}${stderr ?? ''}`;
+        finishResolve({ output, exitCode });
+      },
+    );
+
+    const cancelDisposable = token.onCancellationRequested(() => {
+      child.kill();
+      finishReject(new Error('Command cancelled.'));
+    });
+  });
+}
+
 export function createTerminalTool(logger: Logger): vscode.LanguageModelTool<TerminalToolInput> {
   return {
     prepareInvocation: (options) => ({
@@ -264,18 +345,18 @@ export function createTerminalTool(logger: Logger): vscode.LanguageModelTool<Ter
         shellIntegration = created.shellIntegration;
       }
 
-      if (!shellIntegration) {
-        return makeResult(
-          'Terminal execution error: VS Code shell integration is not available. ' +
-          'Please ensure "terminal.integrated.shellIntegration.enabled" is set to true ' +
-          'in your VS Code settings, restart the terminal, and try again.',
-        );
-      }
-
       try {
-        const result = await executeInTerminal(shellIntegration, command, timeoutMs, token);
+        const result = shellIntegration
+          ? await executeInTerminal(shellIntegration, command, timeoutMs, token)
+          : await executeWithShellFallback(command, cwd, timeoutMs, token);
         const output = result.output;
         const exitCode = result.exitCode;
+
+        if (!shellIntegration) {
+          logger.warn(
+            '[run_in_terminal] VS Code shell integration unavailable; using shell fallback execution',
+          );
+        }
 
         logger.verbose(`[run_in_terminal] exit=${exitCode ?? 'unknown'} output=${output.length}b`);
 
@@ -283,15 +364,7 @@ export function createTerminalTool(logger: Logger): vscode.LanguageModelTool<Ter
           ? options.tokenizationOptions.tokenBudget * 3
           : 12000;
 
-        const parts: string[] = [`exit_code: ${exitCode ?? 'unknown'}`];
-
-        if (output.trim()) {
-          parts.push(`output:\n${truncate(output.trimEnd(), Math.floor(budgetChars * 0.9))}`);
-        } else {
-          parts.push('(no output)');
-        }
-
-        return makeResult(parts.join('\n\n'));
+        return makeResult(formatExecutionResult(output, exitCode, budgetChars));
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logger.verbose(`[run_in_terminal] error: ${message}`);

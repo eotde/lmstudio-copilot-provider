@@ -34,6 +34,15 @@ export interface LMStudioModel {
   };
 }
 
+export interface LMStudioLoadedInstance {
+  context_length?: number;
+  config?: {
+    context_length?: number;
+    [prop: string]: unknown;
+  };
+  [prop: string]: unknown;
+}
+
 /**
  * Raw model from LM Studio /api/v1/models endpoint (uses 'key' instead of 'id')
  */
@@ -44,6 +53,7 @@ export interface LMStudioRawModel {
   display_name?: string;
   architecture?: string;
   max_context_length?: number;
+  loaded_instances?: LMStudioLoadedInstance[];
   capabilities?: {
     vision?: boolean;
     trained_for_tool_use?: boolean;
@@ -65,6 +75,11 @@ export interface LMStudioLocalModel {
   indexedModelIdentifier?: string;
   deviceIdentifier?: string;
   paramsString?: string;
+  architecture?: string;
+  vision?: boolean;
+  trainedForToolUse?: boolean;
+  maxContextLength?: number;
+  max_context_length?: number;
   [prop: string]: unknown;
 }
 

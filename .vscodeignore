@@ -11,3 +11,7 @@ esbuild.js
 tsconfig.json
 **/*.map
 **/*.ts
+.codacy/**
+.github/**
+.chatgpt-workspace-exposure-mcp/**
+instance.lock

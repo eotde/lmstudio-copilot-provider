@@ -12,6 +12,7 @@ import {
   ChatMessageContentPart,
   ChatCompletionRequest,
   ChatCompletionChunk,
+  ChatCompletionResponse,
   ChatTool,
   ToolCall,
   getConfig,
@@ -52,6 +53,7 @@ const XML_TOOL_CALL_RE = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/g;
  */
 export class LMStudioClient {
   private abortControllers = new Map<string, AbortController>();
+  private modelLoadPromises = new Map<string, Promise<boolean>>();
   private resolvedCliPath: string | null | undefined;
 
   constructor(private logger: Logger) {}
@@ -219,7 +221,38 @@ export class LMStudioClient {
     return ['localhost', '127.0.0.1', '0.0.0.0', '::1'].includes(url.hostname);
   }
 
+  private getLoadedContextLength(model: LMStudioRawModel): number | undefined {
+    if (!Array.isArray(model.loaded_instances)) {
+      return undefined;
+    }
+
+    const contextLengths = model.loaded_instances
+      .map((instance) => {
+        if (typeof instance.context_length === 'number') {
+          return instance.context_length;
+        }
+
+        return instance.config?.context_length;
+      })
+      .filter((contextLength): contextLength is number => typeof contextLength === 'number'
+        && Number.isFinite(contextLength)
+        && contextLength > 0);
+
+    if (contextLengths.length === 0) {
+      return undefined;
+    }
+
+    return Math.min(...contextLengths);
+  }
+
   private mapLocalModel(model: LMStudioLocalModel, loaded: boolean): LMStudioModel {
+    const maxContextLength =
+      typeof model.maxContextLength === 'number'
+        ? model.maxContextLength
+        : typeof model.max_context_length === 'number'
+          ? model.max_context_length
+          : undefined;
+
     return {
       id: model.modelKey,
       object: 'model',
@@ -231,6 +264,12 @@ export class LMStudioClient {
       path: model.path,
       format: model.format,
       paramsString: model.paramsString,
+      architecture: model.architecture,
+      max_context_length: maxContextLength,
+      capabilities: {
+        vision: Boolean(model.vision),
+        trained_for_tool_use: Boolean(model.trainedForToolUse),
+      },
     };
   }
 
@@ -300,12 +339,15 @@ export class LMStudioClient {
       let models: LMStudioModel[];
       if (raw?.models && Array.isArray(raw.models)) {
         const rawModels = (raw.models as LMStudioRawModel[]).filter(m => m.type !== 'embedding');
-        models = rawModels.map(m => ({
-          id: m.key, object: 'model', owned_by: m.publisher || 'unknown',
-          type: m.type, publisher: m.publisher, display_name: m.display_name,
-          architecture: m.architecture, max_context_length: m.max_context_length,
-          capabilities: m.capabilities,
-        }));
+        models = rawModels.map((m) => {
+          const loadedContextLength = this.getLoadedContextLength(m);
+          return {
+            id: m.key, object: 'model', owned_by: m.publisher || 'unknown',
+            type: m.type, publisher: m.publisher, display_name: m.display_name,
+            architecture: m.architecture, max_context_length: loadedContextLength ?? m.max_context_length,
+            capabilities: m.capabilities,
+          };
+        });
         this.log(`Filtered ${raw.models.length} -> ${models.length} LLM models`);
       } else if (Array.isArray(raw)) {
         models = raw;
@@ -424,6 +466,22 @@ export class LMStudioClient {
   }
 
   async ensureModelLoaded(modelId: string): Promise<boolean> {
+    const existingLoadPromise = this.modelLoadPromises.get(modelId);
+    if (existingLoadPromise) {
+      this.log(`Waiting for in-flight model load: ${modelId}`);
+      return existingLoadPromise;
+    }
+
+    const loadPromise = this.ensureModelLoadedInternal(modelId)
+      .finally(() => {
+        this.modelLoadPromises.delete(modelId);
+      });
+
+    this.modelLoadPromises.set(modelId, loadPromise);
+    return loadPromise;
+  }
+
+  private async ensureModelLoadedInternal(modelId: string): Promise<boolean> {
     if (!this.isLocalServerUrl()) {
       const serverReady = await this.checkConnection();
       if (!serverReady) {
@@ -450,6 +508,123 @@ export class LMStudioClient {
     }
 
     return this.waitForModelAvailability(modelId, Math.max(this.getConfig().requestTimeout, 10 * 60 * 1000));
+  }
+
+  private extractMessageText(content: string | ChatMessageContentPart[] | null): string {
+    if (!content) {
+      return '';
+    }
+
+    if (typeof content === 'string') {
+      return content;
+    }
+
+    return content
+      .filter((part): part is Extract<ChatMessageContentPart, { type: 'text' }> => part.type === 'text')
+      .map((part) => part.text)
+      .join('');
+  }
+
+  async getInlineCompletion(
+    modelId: string,
+    prefix: string,
+    suffix: string,
+    options: {
+      languageId?: string;
+      maxTokens?: number;
+      temperature?: number;
+      timeoutMs?: number;
+    } = {},
+    token?: vscode.CancellationToken,
+  ): Promise<string | null> {
+    const config = this.getConfig();
+    const timeoutMs = Math.min(
+      Math.max(options.timeoutMs ?? config.requestTimeout, 1000),
+      30000,
+    );
+    const maxTokens = Math.max(1, Math.floor(options.maxTokens ?? 96));
+    const temperature = Number.isFinite(options.temperature) ? options.temperature : 0.2;
+
+    const requestBody: ChatCompletionRequest = {
+      model: modelId,
+      stream: false,
+      max_tokens: maxTokens,
+      temperature,
+      enable_thinking: false,
+      reasoning_effort: 'none',
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'You are an inline code completion engine.',
+            'Return only the code to insert at the cursor.',
+            'Do not explain your answer.',
+            'Do not wrap the output in markdown fences.',
+          ].join('\n'),
+        },
+        {
+          role: 'user',
+          content: [
+            `Language: ${options.languageId ?? 'unknown'}`,
+            'Complete the code at <cursor>.',
+            'Return only the inserted text.',
+            '',
+            '<before>',
+            prefix,
+            '</before>',
+            '',
+            '<after>',
+            suffix,
+            '</after>',
+          ].join('\n'),
+        },
+      ],
+    };
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const cancelDisposable = token?.onCancellationRequested(() => controller.abort());
+
+    try {
+      const response = await fetch(`${config.serverUrl}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
+        },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const responseText = await response.text();
+        this.warn(`Inline completion request failed (${response.status}): ${responseText.slice(0, 300)}`);
+        return null;
+      }
+
+      const payload = await response.json() as ChatCompletionResponse;
+      const firstChoice = payload.choices?.[0];
+      if (!firstChoice) {
+        return null;
+      }
+
+      const text = this.extractMessageText(firstChoice.message.content)
+        .replace(/\r\n/g, '\n')
+        .replace(/<\|(endoftext|im_end|end_of_turn|eot_id)\|>/g, '')
+        .trimEnd();
+
+      return text.length > 0 ? text : null;
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return null;
+      }
+
+      this.warn(`Inline completion request error: ${error}`);
+      return null;
+    } finally {
+      clearTimeout(timeout);
+      cancelDisposable?.dispose();
+    }
   }
 
   // ── Streaming chat completion ─────────────────────────────────────────

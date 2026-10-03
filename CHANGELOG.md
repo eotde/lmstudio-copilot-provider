@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.30.8] - 2026-10-01
+
+### Change 27
+
+- Rebuilt the extension and prepared a fresh Marketplace deployment of the current codebase.
+
+## [1.30.7] - 2026-09-17
+
+### Change 26
+
+- Added experimental LM Studio inline autocompletion support with configurable model, context budget, timeout, and temperature settings.
+- Fixed race conditions in on-demand model loading so concurrent requests no longer trigger duplicate model load operations.
+- Fixed startup UX by preventing Output panel focus hijacking and hardening remote-host startup behavior.
+- Improved context/token reporting and chat message-part parsing reliability across VS Code host/runtime variations.
+
+## [1.30.6] - 2026-08-16
+
+### Change 25
+
+- Merged fix for Windows terminal command execution: terminal commands now run via VS Code shell integration with reliable output capture.
+- Rebuilt and republished the extension for Marketplace.
+
 ## [1.30.5] - 2026-08-03
 
 ### Change 24
